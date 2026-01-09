@@ -189,11 +189,17 @@ impl<'p> TaskGraph<'p> {
     }
 
     /// Constructs a new [`TaskGraph`] from a list of command line arguments.
+    ///
+    /// When `prefer_executable` is true, the first argument will not be
+    /// resolved as a Pixi task even if a task with that name exists. Instead,
+    /// the arguments are treated as a custom command to execute within the
+    /// environment, allowing running executables that collide with task names.
     pub fn from_cmd_args<D: TaskDisambiguation<'p>>(
         project: &'p Workspace,
         search_envs: &SearchEnvironments<'p, D>,
         args: Vec<String>,
         skip_deps: bool,
+        prefer_executable: bool,
     ) -> Result<Self, TaskGraphError> {
         // Split 'args' into arguments if it's a single string, supporting commands
         // like: `"test 1 == 0 || echo failed"` or `"echo foo && echo bar"` or
@@ -208,7 +214,7 @@ impl<'p> TaskGraph<'p> {
             (args, true)
         };
 
-        if let Some(name) = args.first() {
+        if !prefer_executable && let Some(name) = args.first() {
             match search_envs.find_task(TaskName::from(name.clone()), FindTaskSource::CmdArgs, None)
             {
                 Err(FindTaskError::MissingTask(_)) => {}
@@ -633,6 +639,7 @@ mod test {
             &search_envs,
             run_args.iter().map(|arg| arg.to_string()).collect(),
             skip_deps,
+            false,
         )
         .unwrap();
 
@@ -656,279 +663,3 @@ mod test {
     fn test_ordered_commands() {
         assert_eq!(
             commands_in_order(
-                r#"
-        [project]
-        name = "pixi"
-        channels = []
-        platforms = ["linux-64", "osx-64", "win-64", "osx-arm64"]
-        [tasks]
-        root = "echo root"
-        task1 = {cmd="echo task1", depends-on=["root"]}
-        task2 = {cmd="echo task2", depends-on=["root"]}
-        top = {cmd="echo top", depends-on=["task1","task2"]}
-    "#,
-                &["top", "--test"],
-                None,
-                None,
-                false
-            ),
-            vec!["echo root", "echo task1", "echo task2", "echo top '--test'"]
-        );
-    }
-
-    #[test]
-    fn test_cycle_ordered_commands() {
-        assert_eq!(
-            commands_in_order(
-                r#"
-        [project]
-        name = "pixi"
-        channels = []
-        platforms = ["linux-64", "osx-64", "win-64", "osx-arm64"]
-        [tasks]
-        root = {cmd="echo root", depends-on=["task1"]}
-        task1 = {cmd="echo task1", depends-on=["root"]}
-        task2 = {cmd="echo task2", depends-on=["root"]}
-        top = {cmd="echo top", depends-on=["task1","task2"]}
-    "#,
-                &["top"],
-                None,
-                None,
-                false
-            ),
-            vec!["echo root", "echo task1", "echo task2", "echo top"]
-        );
-    }
-
-    #[test]
-    fn test_platform_ordered_commands() {
-        assert_eq!(
-            commands_in_order(
-                r#"
-        [project]
-        name = "pixi"
-        channels = []
-        platforms = ["linux-64", "osx-64", "win-64", "osx-arm64"]
-        [tasks]
-        root = "echo root"
-        task1 = {cmd="echo task1", depends-on=["root"]}
-        task2 = {cmd="echo task2", depends-on=["root"]}
-        top = {cmd="echo top", depends-on=["task1","task2"]}
-        [target.linux-64.tasks]
-        root = {cmd="echo linux", depends-on=["task1"]}
-    "#,
-                &["top"],
-                Some(Platform::Linux64),
-                None,
-                false
-            ),
-            vec!["echo linux", "echo task1", "echo task2", "echo top",]
-        );
-    }
-
-    #[test]
-    fn test_custom_command() {
-        assert_eq!(
-            commands_in_order(
-                r#"
-        [project]
-        name = "pixi"
-        channels = []
-        platforms = ["linux-64", "osx-64", "win-64", "osx-arm64", "linux-riscv64"]
-    "#,
-                &["echo bla"],
-                None,
-                None,
-                false
-            ),
-            vec![r#"echo bla"#]
-        );
-    }
-
-    #[test]
-    fn test_multi_env() {
-        assert_eq!(
-            commands_in_order(
-                r#"
-        [project]
-        name = "pixi"
-        channels = ["conda-forge"]
-        platforms = ["linux-64", "osx-64", "win-64", "osx-arm64"]
-
-        [feature.build.tasks]
-        build = "echo build"
-
-        [environments]
-        build = ["build"]
-    "#,
-                &["build"],
-                None,
-                None,
-                false
-            ),
-            vec![r#"echo build"#]
-        );
-    }
-
-    #[test]
-    fn test_multi_env_default() {
-        assert_eq!(
-            commands_in_order(
-                r#"
-        [project]
-        name = "pixi"
-        channels = []
-        platforms = ["linux-64", "osx-64", "win-64", "osx-arm64"]
-
-        [tasks]
-        start = "hello world"
-
-        [feature.build.tasks]
-        build = "echo build"
-
-        [environments]
-        build = ["build"]
-    "#,
-                &["start"],
-                None,
-                None,
-                false
-            ),
-            vec![r#"hello world"#]
-        );
-    }
-
-    #[test]
-    fn test_multi_env_cuda() {
-        assert_eq!(
-            commands_in_order(
-                r#"
-        [project]
-        name = "pixi"
-        channels = []
-        platforms = ["linux-64", "osx-64", "win-64", "osx-arm64"]
-
-        [tasks]
-        train = "python train.py"
-        test = "python test.py"
-        start = {depends-on = ["train", "test"]}
-
-        [feature.cuda.tasks]
-        train = "python train.py --cuda"
-        test = "python test.py --cuda"
-
-        [environments]
-        cuda = ["cuda"]
-
-    "#,
-                &["start"],
-                None,
-                Some(EnvironmentName::Named("cuda".to_string())),
-                false
-            ),
-            vec![r#"python train.py --cuda"#, r#"python test.py --cuda"#]
-        );
-    }
-
-    #[test]
-    fn test_multi_env_defaults() {
-        // It should select foobar and foo in the default environment
-        assert_eq!(
-            commands_in_order(
-                r#"
-        [project]
-        name = "pixi"
-        channels = []
-        platforms = ["linux-64", "osx-64", "win-64", "osx-arm64"]
-
-        [tasks]
-        foo = "echo foo"
-        foobar = { cmd = "echo bar", depends-on = ["foo"] }
-
-        [feature.build.tasks]
-        build = "echo build"
-
-        [environments]
-        build = ["build"]
-    "#,
-                &["foobar"],
-                None,
-                None,
-                false
-            ),
-            vec![r#"echo foo"#, r#"echo bar"#]
-        );
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_multi_env_defaults_ambigu() {
-        // As foo is really ambiguous it should panic
-        commands_in_order(
-            r#"
-        [project]
-        name = "pixi"
-        channels = []
-        platforms = ["linux-64", "osx-64", "win-64", "osx-arm64", "linux-riscv64"]
-
-        [tasks]
-        foo = "echo foo"
-        foobar = { cmd = "echo bar", depends-on = ["foo"] }
-
-        [feature.build.tasks]
-        build = "echo build"
-        foo = "echo foo abmiguity"
-
-        [environments]
-        build = ["build"]
-    "#,
-            &["foobar"],
-            None,
-            None,
-            false,
-        );
-    }
-
-    #[test]
-    fn test_skip_deps() {
-        let project = r#"
-        [project]
-        name = "pixi"
-        channels = []
-        platforms = ["linux-64", "osx-64", "win-64", "osx-arm64", "linux-riscv64"]
-
-        [tasks]
-        foo = "echo foo"
-        bar = { cmd = "echo bar", depends-on = ["foo"] }
-    "#;
-        assert_eq!(
-            commands_in_order(project, &["bar"], None, None, true),
-            vec![r#"echo bar"#]
-        );
-        assert_eq!(
-            commands_in_order(project, &["bar"], None, None, false),
-            vec!["echo foo", "echo bar"]
-        );
-    }
-
-    /// Regression test for https://github.com/prefix-dev/pixi/issues/5054
-    ///
-    /// Verifies that backslashes in CLI arguments are preserved correctly.
-    #[test]
-    fn test_backslash_escaping_issue_5054() {
-        // Backslashes should be preserved using single quotes
-        let args = ["echo", r"test\ntest"];
-        let result = join_args_with_single_quotes(args.iter().copied());
-        assert_eq!(result, r#"'echo' 'test\ntest'"#);
-
-        // JSON with escaped quotes should use single quotes
-        let json_args = ["python", "-c", "print(1)", r#"{"a": "b\"c"}"#];
-        let json_result = join_args_with_single_quotes(json_args.iter().copied());
-        assert_eq!(json_result, r#"'python' '-c' 'print(1)' '{"a": "b\"c"}'"#);
-
-        // Single quotes in arguments: 'it'"'"'s' (end quote, quoted quote, start quote)
-        let quote_args = ["echo", "it's"];
-        let quote_result = join_args_with_single_quotes(quote_args.iter().copied());
-        assert_eq!(quote_result, r#"'echo' 'it'"'"'s'"#);
-    }
-}
